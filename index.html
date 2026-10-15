@@ -91,7 +91,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .page-head h2 small{font-size:14px;color:var(--sub);font-weight:400;margin-left:8px}
 .nav{background:none;border:1px solid var(--line);border-radius:8px;height:32px;min-width:32px;padding:0 10px;font-size:13px;color:var(--sub)}
 .nav:hover:not(:disabled){color:var(--fg);border-color:var(--sub)}
-.nav:disabled{opacity:.4;cursor:default}
+.nav:disabled{opacity:.4;cursor:default}.save{padding:6px 20px;font-size:13px;margin-left:8px;min-width:96px}.save.done{background:var(--accent);color:var(--btn-fg)}
 .page{flex:1;overflow-y:auto;min-height:0}
 .page-in{max-width:1200px;margin:0 auto;padding:32px 48px 120px}
 .title-in{width:100%;border:0;background:none;color:var(--fg);font:inherit;font-size:26px;font-weight:700;line-height:1.5;padding:0;margin:0 0 20px}
@@ -158,7 +158,7 @@ textarea:focus{outline:none}
     <div class="page-head">
       <h2 id="pageDate"></h2>
       <button class="nav" id="prevDay" type="button" title="前の日（Alt+←）">‹ 前の日</button>
-      <button class="nav" id="nextDay" type="button" title="次の日（Alt+→）">次の日 ›</button>
+      <button class="nav" id="nextDay" type="button" title="次の日（Alt+→）">次の日 ›</button><button class="pill save" id="saveBtn" type="button" title="保存（Ctrl+S）">保存</button>
     </div>
     <div class="page" id="pageScroll"><div class="page-in">
       <input id="title" class="title-in" type="text" placeholder="タイトル" aria-label="タイトル" autocomplete="off">
@@ -328,7 +328,7 @@ async function saveYear(y,mine){
   known[name]=(await fh.getFile()).lastModified;
   renderSide();
 }
-function setState(t,err){const s=$("saveState");s.textContent=t;s.classList.toggle("err",!!err)}
+async function manualSave(){const b=$("saveBtn");await flush();if($("saveState").classList.contains("err")){toast("保存できませんでした");return}const t=new Date();setState("保存しました "+pad(t.getHours())+":"+pad(t.getMinutes()));b.textContent="保存しました ✓";b.classList.add("done");clearTimeout(b._t);b._t=setTimeout(()=>{b.textContent="保存";b.classList.remove("done")},1500)};$("saveBtn").onclick=manualSave;function setState(t,err){const s=$("saveState");s.textContent=t;s.classList.toggle("err",!!err)}
 window.addEventListener("beforeunload",e=>{if(pending.size){flush();e.preventDefault();e.returnValue=""}});
 
 /* ---------- 画面：右（その日のページ） ---------- */
@@ -442,7 +442,7 @@ $("exportBtn").onclick=async()=>{
 /* ---------- キー操作 ---------- */
 document.addEventListener("keydown",e=>{
   if($("app").hidden)return;
-  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();flush()}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();manualSave()}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("q").focus();$("q").select()}
   if(e.altKey&&e.key==="ArrowLeft"){e.preventDefault();openDay(addDays(cur,-1))}
   if(e.altKey&&e.key==="ArrowRight"&&cur<todayKey()){e.preventDefault();openDay(addDays(cur,1))}

@@ -347,10 +347,10 @@ function openDay(k,findWord){
   $("pageScroll").scrollTop=0;
   if(findWord){
     const i=ta.value.toLowerCase().indexOf(findWord.toLowerCase());
-    ta.focus();
+    // 自動ではカーソルを出さない（クリックしたときだけ出す）
     if(i>=0){ta.setSelectionRange(i,i);  // 選択はせずカーソルだけ置く（打鍵で消えないように）
       const ratio=i/Math.max(1,ta.value.length);$("pageScroll").scrollTop=Math.max(0,ta.scrollHeight*ratio-160)}
-  }else (titles[k]||ta.value?ta:$("title")).focus({preventScroll:true});
+  }if(document.activeElement===ta||document.activeElement===$("title"))document.activeElement.blur();
 }
 function grow(){const ta=$("body");ta.style.height="auto";ta.style.height=ta.scrollHeight+"px"}
 function updateCount(){$("chars").textContent=`${[...($("body").value).replace(/\s/g,"")].length.toLocaleString()}字`}

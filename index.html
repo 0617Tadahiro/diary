@@ -189,7 +189,7 @@ let pending=new Set();        // 未保存の日付
 let backedUp=new Set();       // この起動中に予備を作ったファイル
 let cur=todayKey();           // 表示中の日付
 let calMonth=cur.slice(0,7);  // カレンダー表示月
-let saveTimer=null, saving=null;
+let saveTimer=null, saving=null, loaded=false;
 
 /* ---------- 日付 ---------- */
 function pad(n){return String(n).padStart(2,"0")}
@@ -263,12 +263,12 @@ async function loadAll(){
 async function start(){
   $("welcome").hidden=true;$("app").hidden=false;
   $("folderName").textContent="保存先："+dir.name;
-  try{await loadAll()}catch(e){toast("日記を読み込めませんでした："+e.message)}
+  function setLocked(on,msg){$("title").readOnly=on;$("body").readOnly=on;if(on){$("list").innerHTML='<div class="none">'+msg+'</div>';$("listCount").textContent="";setState(msg,/できません/.test(msg))}}loaded=false;openDay(todayKey());setLocked(true,"読み込み中…");for(let i=0;i<4&&!loaded;i++){try{await loadAll();loaded=true}catch(e){if(i===3){setLocked(true,"日記を読み込めませんでした。再読み込みしてください（"+e.message+"）");return}await new Promise(r=>setTimeout(r,1500))}}setLocked(false);setState("");
   openDay(todayKey());
 }
 // 他の端末で更新された分を取り込む
 async function refresh(){
-  if(!dir||pending.size)return;
+  if(!dir||!loaded||pending.size)return;
   try{
     let changed=false;
     for await(const [name,h] of dir.entries()){
@@ -276,8 +276,8 @@ async function refresh(){
     }
     if(!changed)return;
     await loadAll();
-    if(document.activeElement!==$("body"))$("body").value=entries[cur]||"";
-    if(document.activeElement!==$("title"))$("title").value=titles[cur]||"";
+    if($("body").value!==(entries[cur]||"")){$("body").value=entries[cur]||"";grow()}
+    if($("title").value!==(titles[cur]||""))$("title").value=titles[cur]||"";
     renderSide();updateCount();
   }catch(e){}
 }
@@ -285,11 +285,11 @@ window.addEventListener("focus",refresh);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refresh();else flush()});
 
 /* ---------- 保存 ---------- */
-function schedule(){setState("編集中…");clearTimeout(saveTimer);saveTimer=setTimeout(flush,800)}
+function schedule(){if(!loaded)return;setState("編集中…");clearTimeout(saveTimer);saveTimer=setTimeout(flush,800)}
 async function flush(){
   clearTimeout(saveTimer);
   if(saving){await saving;}
-  if(!pending.size)return;
+  if(!pending.size||!loaded)return;
   const years=[...new Set([...pending].map(k=>k.slice(0,4)))];
   const keys=new Set(pending);pending.clear();
   saving=(async()=>{
@@ -309,7 +309,7 @@ async function saveYear(y,mine){
   const f=await fh.getFile();
   const old=f.size?await f.text():"";
   // 他の端末で変更されていたら、自分が触っていない日はそちらに合わせる
-  if(known[name]!==undefined&&f.lastModified!==known[name]){
+  if(old&&f.lastModified!==known[name]){
     const ext=parseYear(old);
     for(const k of allKeys())if(k.startsWith(y+"-")&&!mine.has(k)&&!(k in ext.b)){delete entries[k];delete titles[k]}
     for(const k in ext.b)if(!mine.has(k)){entries[k]=ext.b[k];titles[k]=ext.t[k]}
@@ -342,7 +342,7 @@ function openDay(k,findWord){
   const ta=$("body");ta.value=entries[k]||"";$("title").value=titles[k]||"";
   ta.placeholder=isToday?"今日のことを書く":"この日のことを書く";
   $("fileName").textContent=`日記_${k.slice(0,4)}.md`;
-  if(!pending.size)setState("");
+  if(!pending.size&&loaded)setState("");
   grow();updateCount();renderSide();
   $("pageScroll").scrollTop=0;
   if(findWord){

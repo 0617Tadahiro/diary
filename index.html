@@ -46,6 +46,12 @@ aside{background:var(--side);border-right:1px solid var(--line);display:flex;fle
 .side-top{padding:18px 18px 10px;display:flex;flex-direction:column;gap:12px}
 .brand{display:flex;align-items:center;gap:8px}
 .brand h1{font-size:20px;margin:0;font-weight:700;margin-right:auto}
+.modes{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:3px;margin-right:auto}
+.mode{border:0;background:none;border-radius:999px;padding:4px 14px;font-size:14px;font-weight:500;color:var(--sub)}
+.mode.on{background:var(--btn);color:var(--btn-fg);font-weight:700}
+.newnote{width:100%;border:1px dashed var(--line);background:none;border-radius:8px;padding:8px;font-size:13px;color:var(--sub)}
+.newnote:hover{color:var(--fg);border-color:var(--sub)}
+.del{color:var(--danger)}
 .search{position:relative}
 .search input{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:8px;padding:8px 30px 8px 12px;font:inherit;font-size:14px}
 .search kbd{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-family:var(--font);font-size:11px;color:var(--faint);border:1px solid var(--line);border-radius:4px;padding:0 4px;background:var(--side)}
@@ -140,9 +146,10 @@ textarea:focus{outline:none}
 <div class="app" id="app" hidden>
   <aside>
     <div class="side-top">
-      <div class="brand"><h1>日記</h1><button class="pill line" id="todayBtn" type="button" style="padding:4px 14px;font-size:13px">今日</button></div>
+      <div class="brand"><div class="modes" role="tablist"><button class="mode on" id="modeDiary" type="button" role="tab">日記</button><button class="mode" id="modeNote" type="button" role="tab">ノート</button></div><button class="pill line" id="todayBtn" type="button" style="padding:4px 14px;font-size:13px">今日</button></div>
       <div class="search"><input id="q" type="search" placeholder="言葉で検索" aria-label="日記を検索" autocomplete="off"><kbd>Ctrl K</kbd></div>
-      <div class="cal">
+      <button class="newnote" id="newNoteBtn" type="button" hidden>＋ 新しいノート</button>
+      <div class="cal" id="calBox">
         <div class="cal-head"><button type="button" id="calPrev" aria-label="前の月">‹</button><span id="calTitle"></span><button type="button" id="calNext" aria-label="次の月">›</button></div>
         <div class="cal-grid" id="calGrid"></div>
       </div>
@@ -158,7 +165,7 @@ textarea:focus{outline:none}
     <div class="page-head">
       <h2 id="pageDate"></h2>
       <button class="nav" id="prevDay" type="button" title="前の日（Alt+←）">‹ 前の日</button>
-      <button class="nav" id="nextDay" type="button" title="次の日（Alt+→）">次の日 ›</button><button class="pill save" id="saveBtn" type="button" title="保存（Ctrl+S）">保存</button>
+      <button class="nav" id="nextDay" type="button" title="次の日（Alt+→）">次の日 ›</button><button class="nav del" id="delNoteBtn" type="button" hidden>削除</button><button class="pill save" id="saveBtn" type="button" title="保存（Ctrl+S）">保存</button>
     </div>
     <div class="page" id="pageScroll"><div class="page-in">
       <input id="title" class="title-in" type="text" placeholder="タイトル" aria-label="タイトル" autocomplete="off">
@@ -190,6 +197,9 @@ let backedUp=new Set();       // この起動中に予備を作ったファイ�
 let cur=todayKey();           // 表示中の日付
 let calMonth=cur.slice(0,7);  // カレンダー表示月
 let saveTimer=null, saving=null, loaded=false;
+const NOTE_FILE="ノート.md";
+let notes={};                 // id -> {title, body, created, updated}
+let mode="diary", curNote=null;
 
 /* ---------- 日付 ---------- */
 function pad(n){return String(n).padStart(2,"0")}
@@ -216,6 +226,25 @@ function block(k){const t=(titles[k]||"").trim().replace(/\s+/g," ");return `# $
 function serializeYear(y){
   return allKeys().filter(k=>k.startsWith(y+"-")).map(block).join("\n");
 }
+
+/* ---------- ノート（ノート.md に1ファイルでまとめる） ---------- */
+const NOTE_RE=/^# ノート｜(.*)$/, META_RE=/^<!-- id:(\S+) 作成:(\d{4}-\d\d-\d\d \d\d:\d\d) 更新:(\d{4}-\d\d-\d\d \d\d:\d\d) -->$/;
+function stamp(d=new Date()){return `${keyOf(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`}
+function noteHas(n){return !!(n&&((n.title||"").trim()||(n.body||"").trim()))}
+function parseNotes(text){
+  const out={};let cur=null,buf=[],i=0;
+  const commit=()=>{if(cur){cur.body=buf.join("\n").replace(/^\s*\n/,"").replace(/\s+$/,"");if(noteHas(cur))out[cur.id]=cur}};
+  for(const line of text.split(/\r?\n/)){
+    const m=NOTE_RE.exec(line);
+    if(m){commit();i++;cur={id:"n-hand"+i,title:m[1].trim(),body:"",created:"",updated:""};buf=[];continue}
+    if(cur&&!buf.length){const mm=META_RE.exec(line.trim());if(mm){cur.id=mm[1];cur.created=mm[2];cur.updated=mm[3];continue}}
+    if(cur)buf.push(line);
+  }
+  commit();return out;
+}
+function noteIds(){return Object.keys(notes).filter(id=>noteHas(notes[id])||id===curNote).sort((a,b)=>(notes[b].updated||"9999").localeCompare(notes[a].updated||"9999"))}
+function noteBlock(n){return `# ノート｜${(n.title||"").trim().replace(/\s+/g," ")}\n<!-- id:${n.id} 作成:${n.created||stamp()} 更新:${n.updated||stamp()} -->\n\n${(n.body||"").replace(/\s+$/,"")}\n`}
+function serializeNotes(){return noteIds().filter(id=>noteHas(notes[id])).map(id=>noteBlock(notes[id])).join("\n")}
 
 /* ---------- フォルダ・権限（IndexedDBにフォルダを記憶） ---------- */
 function idb(){return new Promise((res,rej)=>{const r=indexedDB.open("diary",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
@@ -250,15 +279,18 @@ $("pickBtn").onclick=pick;$("repickBtn").onclick=pick;
 
 /* ---------- 読み込み ---------- */
 async function loadAll(){
-  const nb={},nt={},kn={};
+  const nb={},nt={},kn={};let nn={};
   for await(const [name,h] of dir.entries()){
-    if(h.kind!=="file"||!FILE_RE.test(name))continue;
+    if(h.kind!=="file")continue;
+    if(name===NOTE_FILE){const f=await h.getFile();kn[name]=f.lastModified;nn=parseNotes(await f.text());continue}
+    if(!FILE_RE.test(name))continue;
     const f=await h.getFile();kn[name]=f.lastModified;
     const r=parseYear(await f.text());Object.assign(nb,r.b);Object.assign(nt,r.t);
   }
   // 未保存の編集は手元を優先
-  for(const k of pending){nb[k]=entries[k]??"";nt[k]=titles[k]??""}
-  entries=nb;titles=nt;known=kn;
+  for(const k of pending){if(k.startsWith("n:")){const id=k.slice(2);if(notes[id])nn[id]=notes[id]}else{nb[k]=entries[k]??"";nt[k]=titles[k]??""}}
+  if(curNote&&notes[curNote]&&!nn[curNote])nn[curNote]=notes[curNote];
+  entries=nb;titles=nt;notes=nn;known=kn;
 }
 async function start(){
   $("welcome").hidden=true;$("app").hidden=false;
@@ -272,12 +304,13 @@ async function refresh(){
   try{
     let changed=false;
     for await(const [name,h] of dir.entries()){
-      if(h.kind==="file"&&FILE_RE.test(name)&&(await h.getFile()).lastModified!==known[name]){changed=true;break}
+      if(h.kind==="file"&&(FILE_RE.test(name)||name===NOTE_FILE)&&(await h.getFile()).lastModified!==known[name]){changed=true;break}
     }
     if(!changed)return;
     await loadAll();
-    if($("body").value!==(entries[cur]||"")){$("body").value=entries[cur]||"";grow()}
-    if($("title").value!==(titles[cur]||""))$("title").value=titles[cur]||"";
+    const vb=mode==="note"?(notes[curNote]?.body||""):(entries[cur]||""),vt=mode==="note"?(notes[curNote]?.title||""):(titles[cur]||"");
+    if($("body").value!==vb){$("body").value=vb;grow()}
+    if($("title").value!==vt)$("title").value=vt;
     renderSide();updateCount();
   }catch(e){}
 }
@@ -290,11 +323,13 @@ async function flush(){
   clearTimeout(saveTimer);
   if(saving){await saving;}
   if(!pending.size||!loaded)return;
-  const years=[...new Set([...pending].map(k=>k.slice(0,4)))];
   const keys=new Set(pending);pending.clear();
+  const years=[...new Set([...keys].filter(k=>!k.startsWith("n:")).map(k=>k.slice(0,4)))];
+  const noteKeys=new Set([...keys].filter(k=>k.startsWith("n:")).map(k=>k.slice(2)));
   saving=(async()=>{
     try{
       for(const y of years)await saveYear(y,keys);
+      if(noteKeys.size)await saveNotes(noteKeys);
       const t=new Date();setState(`保存しました ${pad(t.getHours())}:${pad(t.getMinutes())}`);
     }catch(e){
       keys.forEach(k=>pending.add(k));
@@ -328,13 +363,44 @@ async function saveYear(y,mine){
   known[name]=(await fh.getFile()).lastModified;
   renderSide();
 }
+async function saveNotes(mine){
+  const fh=await dir.getFileHandle(NOTE_FILE,{create:true});
+  const f=await fh.getFile();
+  const old=f.size?await f.text():"";
+  // 他の端末で変更されていたら、自分が触っていないノートはそちらに合わせる
+  if(old&&f.lastModified!==known[NOTE_FILE]){
+    const ext=parseNotes(old);
+    for(const id of Object.keys(notes))if(!mine.has(id)&&id!==curNote&&!(id in ext))delete notes[id];
+    for(const id in ext)if(!mine.has(id))notes[id]=ext[id];
+  }
+  if(!backedUp.has(NOTE_FILE)){
+    if(old){
+      const bdir=await dir.getDirectoryHandle("backup",{create:true});
+      const bw=await (await bdir.getFileHandle(NOTE_FILE,{create:true})).createWritable();
+      await bw.write(old);await bw.close();
+    }
+    backedUp.add(NOTE_FILE);
+  }
+  const w=await fh.createWritable();await w.write(serializeNotes());await w.close();
+  known[NOTE_FILE]=(await fh.getFile()).lastModified;
+  renderSide();
+}
 async function manualSave(){const b=$("saveBtn");await flush();if($("saveState").classList.contains("err")){toast("保存できませんでした");return}const t=new Date();setState("保存しました "+pad(t.getHours())+":"+pad(t.getMinutes()));b.textContent="保存しました ✓";b.classList.add("done");clearTimeout(b._t);b._t=setTimeout(()=>{b.textContent="保存";b.classList.remove("done")},1500)};$("saveBtn").onclick=manualSave;function setState(t,err){const s=$("saveState");s.textContent=t;s.classList.toggle("err",!!err)}
 window.addEventListener("beforeunload",e=>{if(pending.size){flush();e.preventDefault();e.returnValue=""}});
 
 /* ---------- 画面：右（その日のページ） ---------- */
+function setMode(m){
+  mode=m;$("modeDiary").classList.toggle("on",m==="diary");$("modeNote").classList.toggle("on",m==="note");
+  $("calBox").hidden=m==="note";$("todayBtn").hidden=m==="note";$("newNoteBtn").hidden=m!=="note";
+  $("prevDay").hidden=m==="note";$("nextDay").hidden=m==="note";$("delNoteBtn").hidden=m!=="note";
+  $("q").placeholder=m==="note"?"ノートを検索":"言葉で検索";
+  $("title").placeholder=m==="note"?"ノートのタイトル（例：Horwathインターンのまとめ）":"タイトル";
+}
+function dropEmptyNote(){if(curNote&&notes[curNote]&&!noteHas(notes[curNote]))delete notes[curNote]}
 function openDay(k,findWord){
   if(k>todayKey())return;
   if(pending.size)flush();
+  if(mode!=="diary"){dropEmptyNote();curNote=null;setMode("diary")}
   cur=k;calMonth=k.slice(0,7);
   const d=dateOf(k),isToday=k===todayKey();
   $("pageDate").innerHTML=`${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日（${WD[d.getDay()]}）${isToday?"<small>今日</small>":""}`;
@@ -352,13 +418,50 @@ function openDay(k,findWord){
       const ratio=i/Math.max(1,ta.value.length);$("pageScroll").scrollTop=Math.max(0,ta.scrollHeight*ratio-160)}
   }if(document.activeElement===ta||document.activeElement===$("title"))document.activeElement.blur();
 }
+function fmtStamp(s){if(!s)return"";const [d,t]=s.split(" ");const [y,m,dd]=d.split("-").map(Number);return `${y}年${m}月${dd}日 ${t}`}
+function noteHead(){const n=notes[curNote];$("pageDate").innerHTML=`ノート<small>${n&&n.updated?"最終更新 "+fmtStamp(n.updated):"新しいノート"}</small>`}
+function openNote(id,findWord){
+  if(pending.size)flush();
+  if(curNote!==id)dropEmptyNote();
+  if(mode!=="note")setMode("note");
+  curNote=id;const n=notes[id];resetDel();
+  noteHead();
+  const ta=$("body");ta.value=n?n.body:"";$("title").value=n?n.title:"";
+  ta.placeholder="まとめたいことを書く";
+  $("fileName").textContent=NOTE_FILE;
+  if(!pending.size&&loaded)setState("");
+  grow();updateCount();renderSide();$("pageScroll").scrollTop=0;
+  if(findWord){const i=ta.value.toLowerCase().indexOf(findWord.toLowerCase());if(i>=0){ta.setSelectionRange(i,i);$("pageScroll").scrollTop=Math.max(0,ta.scrollHeight*(i/Math.max(1,ta.value.length))-160)}}
+  if(document.activeElement===ta||document.activeElement===$("title"))document.activeElement.blur();
+}
+function newNote(){
+  const id="n-"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),now=stamp();
+  dropEmptyNote();notes[id]={id,title:"",body:"",created:now,updated:""};
+  openNote(id);$("title").focus();
+}
+function firstNoteOrNew(){const ids=noteIds();ids.length?openNote(ids[0]):newNote()}
+let delArmed=null;
+function resetDel(){clearTimeout(delArmed);delArmed=null;$("delNoteBtn").textContent="削除"}
+$("delNoteBtn").onclick=async()=>{
+  if(!curNote)return;
+  if(!delArmed){$("delNoteBtn").textContent="もう一度押すと削除";delArmed=setTimeout(resetDel,3000);return}
+  resetDel();const id=curNote,had=noteHas(notes[id]);delete notes[id];curNote=null;
+  if(had){pending.add("n:"+id);await flush();toast("ノートを削除しました（予備は backup フォルダに残っています）")}
+  firstNoteOrNew();
+};
+$("modeDiary").onclick=()=>{if(mode!=="diary"){$("q").value="";openDay(cur)}};
+$("modeNote").onclick=()=>{if(mode!=="note"){$("q").value="";firstNoteOrNew()}};
+$("newNoteBtn").onclick=newNote;
 function grow(){const ta=$("body"),sc=$("pageScroll"),top=sc.scrollTop;ta.style.height="auto";ta.style.height=ta.scrollHeight+"px";sc.scrollTop=top}function keepCaret(){const ta=$("body"),sc=$("pageScroll"),cs=getComputedStyle(ta),m=document.createElement("div");for(const p of ["fontFamily","fontSize","fontWeight","lineHeight","letterSpacing","wordBreak","overflowWrap","tabSize"])m.style[p]=cs[p];m.style.cssText+=";position:absolute;visibility:hidden;white-space:pre-wrap;top:0;left:-9999px;width:"+ta.clientWidth+"px";m.textContent=ta.value.slice(0,ta.selectionEnd);const s=document.createElement("span");s.textContent="|";m.appendChild(s);document.body.appendChild(m);const y=s.offsetTop+s.offsetHeight;m.remove();const caret=ta.getBoundingClientRect().top+y,limit=sc.getBoundingClientRect().bottom-80;if(caret>limit)sc.scrollTop+=caret-limit}
 function updateCount(){$("chars").textContent=`${[...($("body").value).replace(/\s/g,"")].length.toLocaleString()}字`}
+function touchNote(){const n=notes[curNote];n.updated=stamp();if(!n.created)n.created=n.updated;pending.add("n:"+curNote);noteHead()}
 $("body").addEventListener("input",()=>{
+  if(mode==="note"){if(!notes[curNote])return;notes[curNote].body=$("body").value;touchNote();grow();keepCaret();updateCount();schedule();renderSideSoon();return}
   entries[cur]=$("body").value;pending.add(cur);
   grow();keepCaret();updateCount();schedule();renderSideSoon();
 });
 $("title").addEventListener("input",()=>{
+  if(mode==="note"){if(!notes[curNote])return;notes[curNote].title=$("title").value;touchNote();schedule();renderSideSoon();return}
   titles[cur]=$("title").value;pending.add(cur);schedule();renderSideSoon();
 });
 $("title").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();const ta=$("body");ta.focus();ta.setSelectionRange(0,0)}});
@@ -369,7 +472,7 @@ $("todayBtn").onclick=()=>openDay(todayKey());
 /* ---------- 画面：左（カレンダー・一覧・検索） ---------- */
 let sideTimer=null;
 function renderSideSoon(){clearTimeout(sideTimer);sideTimer=setTimeout(renderSide,400)}
-function renderSide(){renderCal();renderList()}
+function renderSide(){if(mode==="diary")renderCal();renderList()}
 function renderCal(){
   const [y,m]=calMonth.split("-").map(Number);
   $("calTitle").textContent=`${y}年${m}月`;
@@ -403,8 +506,17 @@ function snippet(text,q){
   const j=i-s;
   return (s?"…":"")+esc(part.slice(0,j))+"<mark>"+esc(part.slice(j,j+q.length))+"</mark>"+esc(part.slice(j+q.length));
 }
+function renderNoteList(q){
+  let ids=noteIds();
+  if(q)ids=ids.filter(id=>((notes[id].title||"")+"\n"+(notes[id].body||"")).toLowerCase().includes(q.toLowerCase()));
+  $("listTitle").textContent=q?`「${q}」の検索結果`:"すべてのノート";
+  $("listCount").textContent=`${ids.filter(id=>noteHas(notes[id])).length}件`;
+  if(!ids.length){$("list").innerHTML=`<div class="none">${q?"見つかりませんでした":"まだノートはありません。<br>「＋ 新しいノート」から作れます。"}</div>`;return}
+  $("list").innerHTML=ids.map(id=>{const n=notes[id];return `<button type="button" class="item${id===curNote?" sel":""}" data-n="${esc(id)}"><div class="d">${n.updated?fmtStamp(n.updated):"未保存"}</div><div class="t">${n.title&&n.title.trim()?mark(n.title,q):"無題のノート"}</div><div class="ex">${snippet(n.body||"",q)}</div></button>`}).join("");
+}
 function renderList(){
   const q=$("q").value.trim();
+  if(mode==="note")return renderNoteList(q);
   let keys=allKeys();
   if(q)keys=keys.filter(k=>((titles[k]||"")+"\n"+(entries[k]||"")).toLowerCase().includes(q.toLowerCase()));
   $("listTitle").textContent=q?`「${q}」の検索結果`:"すべての日記";
@@ -418,24 +530,24 @@ function renderList(){
   }
   $("list").innerHTML=h;
 }
-$("list").addEventListener("click",e=>{const b=e.target.closest("[data-k]");if(b)openDay(b.dataset.k,$("q").value.trim()||null)});
+$("list").addEventListener("click",e=>{const q=$("q").value.trim()||null;const n=e.target.closest("[data-n]");if(n)return openNote(n.dataset.n,q);const b=e.target.closest("[data-k]");if(b)openDay(b.dataset.k,q)});
 let qTimer=null;
 $("q").addEventListener("input",()=>{clearTimeout(qTimer);qTimer=setTimeout(renderList,150)});
 $("q").addEventListener("keydown",e=>{
   if(e.key==="Escape"){$("q").value="";renderList();$("body").focus()}
-  if(e.key==="Enter"){const b=$("list").querySelector(".item");if(b)openDay(b.dataset.k,$("q").value.trim())}
+  if(e.key==="Enter"){const b=$("list").querySelector(".item");if(b)b.click()}
 });
 
 /* ---------- 全期間の書き出し ---------- */
 $("exportBtn").onclick=async()=>{
   await flush();
-  const keys=allKeys();
-  if(!keys.length)return toast("書き出す日記がまだありません");
-  const text=keys.map(block).join("\n");
+  const keys=allKeys(),nids=noteIds().filter(id=>noteHas(notes[id]));
+  if(!keys.length&&!nids.length)return toast("書き出す日記がまだありません");
+  const text=keys.map(block).join("\n")+(nids.length?"\n---\n\n"+nids.map(id=>noteBlock(notes[id])).join("\n"):"");
   try{
     const h=await showSaveFilePicker({suggestedName:`日記_全期間_${todayKey().replace(/-/g,"")}.md`,startIn:"documents",types:[{description:"テキスト（Markdown）",accept:{"text/markdown":[".md"]}}]});
     const w=await h.createWritable();await w.write(text);await w.close();
-    toast(`${keys.length}日分を書き出しました`);
+    toast(`日記${keys.length}日分${nids.length?"・ノート"+nids.length+"件":""}を書き出しました`);
   }catch(e){if(e.name!=="AbortError")toast("書き出せませんでした："+e.message)}
 };
 
@@ -444,11 +556,11 @@ document.addEventListener("keydown",e=>{
   if($("app").hidden)return;
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();manualSave()}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("q").focus();$("q").select()}
-  if(e.altKey&&e.key==="ArrowLeft"){e.preventDefault();openDay(addDays(cur,-1))}
-  if(e.altKey&&e.key==="ArrowRight"&&cur<todayKey()){e.preventDefault();openDay(addDays(cur,1))}
+  if(mode==="diary"&&e.altKey&&e.key==="ArrowLeft"){e.preventDefault();openDay(addDays(cur,-1))}
+  if(mode==="diary"&&e.altKey&&e.key==="ArrowRight"&&cur<todayKey()){e.preventDefault();openDay(addDays(cur,1))}
 });
 // 日付が変わったら「今日」を更新
-setInterval(()=>{if(!$("app").hidden)renderCal()},60000);
+setInterval(()=>{if(!$("app").hidden&&mode==="diary")renderCal()},60000);
 
 let toastTimer=null;
 function toast(t){const el=$("toast");el.textContent=t;el.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.hidden=true,3000)}

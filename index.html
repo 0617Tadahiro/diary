@@ -513,16 +513,16 @@ async function shrink(file){
   return await new Promise(res=>c.toBlob(res,"image/jpeg",0.85));
 }
 async function addPhotos(files){
-  if(!loaded||!dir)return;
-  if(mode==="note"&&!notes[curNote])return;
-  files=[...files].filter(f=>f&&f.type&&f.type.startsWith("image/"));if(!files.length)return;
-  if(mode==="note"&&!notes[curNote])return;
+  if(!loaded)return toast("まだ読み込み中です。少し待ってからもう一度貼ってください");
+  if(!dir)return toast("保存先のフォルダが選ばれていません");
+  if(mode==="note"&&!notes[curNote])return toast("先に左の一覧からノートを開くか「＋ 新しいノート」を作ってください");
+  files=[...files].filter(isImgFile);if(!files.length)return toast("画像が見つかりませんでした");
   const key=curKey();setState("写真を保存中…");
   try{
     const pd=await dir.getDirectoryHandle(PHOTO_DIR,{create:true});
     const list=photos[key]=photos[key]||[];
     for(const f of files){
-      const blob=await shrink(f);const n=Math.max(0,...list.map(photoNum))+1;
+      let blob;try{blob=await shrink(f)}catch(err){toast("この画像は読み込めない形式です（JPG・PNGなら貼れます）");continue}const n=Math.max(0,...list.map(photoNum))+1;
       const name=photoPrefix(key)+n+".jpg";
       const w=await (await pd.getFileHandle(name,{create:true})).createWritable();await w.write(blob);await w.close();
       list.push(name);
@@ -594,10 +594,25 @@ $("gallery").addEventListener("input",e=>{
 $("gallery").addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"&&e.key==="Enter"&&!e.isComposing)e.target.blur()});
 $("photoInput").addEventListener("change",e=>{addPhotos(e.target.files);e.target.value=""});
 $("lightbox").onclick=()=>{$("lightbox").hidden=true};
-document.addEventListener("paste",e=>{
+function isImgFile(f){return !!f&&((f.type||"").startsWith("image/")||/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(f.name||""))}
+document.addEventListener("paste",async e=>{
   if($("app").hidden)return;
-  const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith("image/"));
-  if(!files.length)return;e.preventDefault();addPhotos(files);
+  const cd=e.clipboardData;if(!cd)return;
+  let files=[...(cd.files||[])].filter(isImgFile);
+  if(!files.length)files=[...(cd.items||[])].filter(i=>i.kind==="file").map(i=>i.getAsFile()).filter(isImgFile);
+  if(files.length){e.preventDefault();return addPhotos(files)}
+  const types=[...(cd.types||[])],html=cd.getData("text/html")||"";
+  // 文字が入っていれば普通の文字の貼り付け
+  if(types.includes("text/plain")&&cd.getData("text/plain").trim()&&!/<img/i.test(html))return;
+  if(e.target.tagName==="INPUT")return;
+  e.preventDefault();
+  // 画像がイベントに乗らなかったとき：クリップボードを直接読む
+  try{
+    const out=[];
+    for(const it of await navigator.clipboard.read()){const t=it.types.find(x=>x.startsWith("image/"));if(t){const b=await it.getType(t);out.push(new File([b],"paste."+(t.split("/")[1]||"png"),{type:t}))}}
+    if(out.length)return addPhotos(out);
+  }catch(err){}
+  toast(/<img/i.test(html)?"画像そのものがコピーされていません。画像を右クリック→「画像をコピー」してから貼ってください":"クリップボードに画像がありません。もう一度スクショを撮ってから貼ってください");
 });
 $("pageScroll").addEventListener("dragover",e=>{if([...e.dataTransfer.types].includes("Files")){e.preventDefault();$("pageScroll").classList.add("drop")}});
 $("pageScroll").addEventListener("dragleave",e=>{if(e.target===$("pageScroll"))$("pageScroll").classList.remove("drop")});

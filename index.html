@@ -102,7 +102,22 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .page-in{max-width:1200px;margin:0 auto;padding:32px 48px 120px}
 .title-in{width:100%;border:0;background:none;color:var(--fg);font:inherit;font-size:26px;font-weight:700;line-height:1.5;padding:0;margin:0 0 20px}
 .title-in:focus{outline:none}
-textarea{width:100%;min-height:60vh;border:0;background:none;color:var(--fg);font:inherit;font-size:17px;line-height:2;resize:none;padding:0;overflow:hidden}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:24px}
+.ph{position:relative;margin:0;display:flex;flex-direction:column;gap:6px}
+.ph img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;background:var(--side);cursor:zoom-in;display:block}
+.ph input{width:100%;border:0;border-bottom:1px solid transparent;background:none;color:var(--sub);font:inherit;font-size:13px;line-height:1.5;padding:2px 0;text-align:center}
+.ph input:hover{border-bottom-color:var(--line)}
+.ph input:focus{outline:none;border-bottom-color:var(--accent);color:var(--fg)}
+.ph .x{position:absolute;top:6px;right:6px;border:0;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:2px 9px;opacity:0;transition:opacity .15s}
+.ph:hover .x,.ph .x:focus-visible,.ph .x.armed{opacity:1}
+.ph .x.armed{background:var(--danger)}
+.addph{aspect-ratio:4/3;border:1px dashed var(--line);border-radius:8px;background:none;color:var(--faint);font-size:13px;line-height:1.6;padding:8px}
+.addph:hover{color:var(--fg);border-color:var(--sub)}
+.page.drop{outline:2px dashed var(--accent);outline-offset:-8px}
+.lightbox{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;cursor:zoom-out}
+.lightbox img{max-width:100%;max-height:85vh;object-fit:contain;border-radius:6px}
+.lightbox p{color:#eee;margin:0;font-size:14px}
+textarea{width:100%;min-height:35vh;border:0;background:none;color:var(--fg);font:inherit;font-size:17px;line-height:2;resize:none;padding:0;overflow:hidden}
 textarea:focus{outline:none}
 ::placeholder{color:var(--faint)}
 .status-bar{display:flex;gap:16px;align-items:center;padding:8px 32px;border-top:1px solid var(--line);font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
@@ -170,6 +185,8 @@ textarea:focus{outline:none}
     <div class="page" id="pageScroll"><div class="page-in">
       <input id="title" class="title-in" type="text" placeholder="タイトル" aria-label="タイトル" autocomplete="off">
       <textarea id="body" placeholder="今日のことを書く"></textarea>
+      <div class="gallery" id="gallery"></div>
+      <input type="file" id="photoInput" accept="image/*" multiple hidden>
     </div></div>
     <div class="status-bar">
       <span id="chars">0字</span>
@@ -180,6 +197,7 @@ textarea:focus{outline:none}
   </main>
 </div>
 <div class="toast" id="toast" hidden></div>
+<div class="lightbox" id="lightbox" hidden><img id="lbImg" alt=""><p id="lbCap"></p></div>
 
 <script>
 "use strict";
@@ -200,6 +218,9 @@ let saveTimer=null, saving=null, loaded=false;
 const NOTE_FILE="ノート.md";
 let notes={};                 // id -> {title, body, created, updated}
 let mode="diary", curNote=null;
+const PHOTO_DIR="写真", CAP_FILE="説明.json";
+let photos={};                // "2026-10-19" または "n:<id>" -> [ファイル名]
+let captions={};              // ファイル名 -> 説明
 
 /* ---------- 日付 ---------- */
 function pad(n){return String(n).padStart(2,"0")}
@@ -210,8 +231,8 @@ function addDays(k,n){const d=dateOf(k);d.setDate(d.getDate()+n);return keyOf(d)
 function headOf(k){const d=dateOf(k);return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日（${WD[d.getDay()]}）`}
 
 /* ---------- ファイル形式（1年1ファイル） ---------- */
-function has(k){return !!((entries[k]&&entries[k].trim())||(titles[k]&&titles[k].trim()))}
-function allKeys(){return [...new Set([...Object.keys(entries),...Object.keys(titles)])].filter(has).sort().reverse()}
+function has(k){return !!((entries[k]&&entries[k].trim())||(titles[k]&&titles[k].trim())||(photos[k]&&photos[k].length))}
+function allKeys(){return [...new Set([...Object.keys(entries),...Object.keys(titles),...Object.keys(photos).filter(k=>!k.startsWith("n:"))])].filter(has).sort().reverse()}
 function parseYear(text){
   const out={b:{},t:{}};let k=null,t="",buf=[];
   const commit=()=>{if(k){const b=buf.join("\n").replace(/^\s*\n/,"").replace(/\s+$/,"");if(b||t){out.b[k]=b;out.t[k]=t}}};
@@ -230,7 +251,7 @@ function serializeYear(y){
 /* ---------- ノート（ノート.md に1ファイルでまとめる） ---------- */
 const NOTE_RE=/^# ノート｜(.*)$/, META_RE=/^<!-- id:(\S+) 作成:(\d{4}-\d\d-\d\d \d\d:\d\d) 更新:(\d{4}-\d\d-\d\d \d\d:\d\d) -->$/;
 function stamp(d=new Date()){return `${keyOf(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`}
-function noteHas(n){return !!(n&&((n.title||"").trim()||(n.body||"").trim()))}
+function noteHas(n){return !!(n&&((n.title||"").trim()||(n.body||"").trim()||(photos["n:"+n.id]||[]).length))}
 function parseNotes(text){
   const out={};let cur=null,buf=[],i=0;
   const commit=()=>{if(cur){cur.body=buf.join("\n").replace(/^\s*\n/,"").replace(/\s+$/,"");if(noteHas(cur))out[cur.id]=cur}};
@@ -290,6 +311,17 @@ async function loadAll(){
   // 未保存の編集は手元を優先
   for(const k of pending){if(k.startsWith("n:")){const id=k.slice(2);if(notes[id])nn[id]=notes[id]}else{nb[k]=entries[k]??"";nt[k]=titles[k]??""}}
   if(curNote&&notes[curNote]&&!nn[curNote])nn[curNote]=notes[curNote];
+  const np={};let caps={};
+  try{
+    const pd=await dir.getDirectoryHandle(PHOTO_DIR);
+    for await(const [name,h] of pd.entries()){
+      if(h.kind!=="file")continue;
+      if(name===CAP_FILE){try{caps=JSON.parse(await (await h.getFile()).text())||{}}catch(e){}continue}
+      const key=photoKeyOf(name);if(key)(np[key]=np[key]||[]).push(name);
+    }
+  }catch(e){}
+  for(const k in np)np[k].sort((a,b)=>photoNum(a)-photoNum(b));
+  photos=np;captions=Object.assign(caps,capPending);
   entries=nb;titles=nt;notes=nn;known=kn;
 }
 async function start(){
@@ -311,11 +343,11 @@ async function refresh(){
     const vb=mode==="note"?(notes[curNote]?.body||""):(entries[cur]||""),vt=mode==="note"?(notes[curNote]?.title||""):(titles[cur]||"");
     if($("body").value!==vb){$("body").value=vb;grow()}
     if($("title").value!==vt)$("title").value=vt;
-    renderSide();updateCount();
+    renderSide();updateCount();renderGallery();
   }catch(e){}
 }
 window.addEventListener("focus",refresh);
-document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refresh();else flush()});
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refresh();else{flush();saveCaptions()}});
 
 /* ---------- 保存 ---------- */
 function schedule(){if(!loaded)return;setState("編集中…");clearTimeout(saveTimer);saveTimer=setTimeout(flush,800)}
@@ -385,7 +417,7 @@ async function saveNotes(mine){
   known[NOTE_FILE]=(await fh.getFile()).lastModified;
   renderSide();
 }
-async function manualSave(){const b=$("saveBtn");await flush();if($("saveState").classList.contains("err")){toast("保存できませんでした");return}const t=new Date();setState("保存しました "+pad(t.getHours())+":"+pad(t.getMinutes()));b.textContent="保存しました ✓";b.classList.add("done");clearTimeout(b._t);b._t=setTimeout(()=>{b.textContent="保存";b.classList.remove("done")},1500)};$("saveBtn").onclick=manualSave;function setState(t,err){const s=$("saveState");s.textContent=t;s.classList.toggle("err",!!err)}
+async function manualSave(){const b=$("saveBtn");await flush();await saveCaptions();if($("saveState").classList.contains("err")){toast("保存できませんでした");return}const t=new Date();setState("保存しました "+pad(t.getHours())+":"+pad(t.getMinutes()));b.textContent="保存しました ✓";b.classList.add("done");clearTimeout(b._t);b._t=setTimeout(()=>{b.textContent="保存";b.classList.remove("done")},1500)};$("saveBtn").onclick=manualSave;function setState(t,err){const s=$("saveState");s.textContent=t;s.classList.toggle("err",!!err)}
 window.addEventListener("beforeunload",e=>{if(pending.size){flush();e.preventDefault();e.returnValue=""}});
 
 /* ---------- 画面：右（その日のページ） ---------- */
@@ -409,7 +441,7 @@ function openDay(k,findWord){
   ta.placeholder=isToday?"今日のことを書く":"この日のことを書く";
   $("fileName").textContent=`日記_${k.slice(0,4)}.md`;
   if(!pending.size&&loaded)setState("");
-  grow();updateCount();renderSide();
+  grow();updateCount();renderSide();renderGallery();
   $("pageScroll").scrollTop=0;
   if(findWord){
     const i=ta.value.toLowerCase().indexOf(findWord.toLowerCase());
@@ -430,7 +462,7 @@ function openNote(id,findWord){
   ta.placeholder="まとめたいことを書く";
   $("fileName").textContent=NOTE_FILE;
   if(!pending.size&&loaded)setState("");
-  grow();updateCount();renderSide();$("pageScroll").scrollTop=0;
+  grow();updateCount();renderSide();renderGallery();$("pageScroll").scrollTop=0;
   if(findWord){const i=ta.value.toLowerCase().indexOf(findWord.toLowerCase());if(i>=0){ta.setSelectionRange(i,i);$("pageScroll").scrollTop=Math.max(0,ta.scrollHeight*(i/Math.max(1,ta.value.length))-160)}}
   if(document.activeElement===ta||document.activeElement===$("title"))document.activeElement.blur();
 }
@@ -452,6 +484,109 @@ $("delNoteBtn").onclick=async()=>{
 $("modeDiary").onclick=()=>{if(mode!=="diary"){$("q").value="";openDay(cur)}};
 $("modeNote").onclick=()=>{if(mode!=="note"){$("q").value="";firstNoteOrNew()}};
 $("newNoteBtn").onclick=newNote;
+/* ---------- 写真 ---------- */
+let capPending={},capTimer=null,galleryUrls=[],galleryToken=0;
+function photoKeyOf(name){
+  if(!/\.(jpe?g|png|webp|gif)$/i.test(name))return null;
+  let m=/^ノート_(.+)_\d+\.\w+$/.exec(name);if(m)return "n:"+m[1];
+  m=/^(\d{4}-\d\d-\d\d)_\d+\.\w+$/.exec(name);return m?m[1]:null;
+}
+function photoNum(n){const m=/_(\d+)\.\w+$/.exec(n);return m?+m[1]:0}
+function curKey(){return mode==="note"?"n:"+curNote:cur}
+function photoPrefix(key){return key.startsWith("n:")?"ノート_"+key.slice(2)+"_":key+"_"}
+async function shrink(file){
+  const bmp=await createImageBitmap(file);const r=Math.min(1,1600/Math.max(bmp.width,bmp.height));
+  const c=document.createElement("canvas");c.width=Math.round(bmp.width*r);c.height=Math.round(bmp.height*r);
+  const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(bmp,0,0,c.width,c.height);
+  return await new Promise(res=>c.toBlob(res,"image/jpeg",0.85));
+}
+async function addPhotos(files){
+  if(!loaded||!dir)return;
+  files=[...files].filter(f=>f&&f.type&&f.type.startsWith("image/"));if(!files.length)return;
+  if(mode==="note"&&!notes[curNote])return;
+  const key=curKey();setState("写真を保存中…");
+  try{
+    const pd=await dir.getDirectoryHandle(PHOTO_DIR,{create:true});
+    const list=photos[key]=photos[key]||[];
+    for(const f of files){
+      const blob=await shrink(f);const n=Math.max(0,...list.map(photoNum))+1;
+      const name=photoPrefix(key)+n+".jpg";
+      const w=await (await pd.getFileHandle(name,{create:true})).createWritable();await w.write(blob);await w.close();
+      list.push(name);
+    }
+    if(mode==="note"){touchNote();schedule()}
+    renderGallery();renderSideSoon();
+    const t=new Date();setState(`写真を保存しました ${pad(t.getHours())}:${pad(t.getMinutes())}`);
+  }catch(e){setState("写真を保存できませんでした："+e.message,true)}
+}
+async function saveCaptions(){
+  clearTimeout(capTimer);if(!Object.keys(capPending).length||!dir)return;
+  const mine=capPending;capPending={};
+  try{
+    const pd=await dir.getDirectoryHandle(PHOTO_DIR,{create:true});
+    const fh=await pd.getFileHandle(CAP_FILE,{create:true});
+    let disk={};try{const f=await fh.getFile();if(f.size)disk=JSON.parse(await f.text())||{}}catch(e){}
+    Object.assign(disk,mine);for(const k in disk)if(!disk[k])delete disk[k];
+    captions=Object.assign(disk,capPending);
+    const w=await fh.createWritable();await w.write(JSON.stringify(disk,null,1));await w.close();
+    const t=new Date();setState(`保存しました ${pad(t.getHours())}:${pad(t.getMinutes())}`);
+  }catch(e){Object.assign(capPending,mine);setState("説明を保存できませんでした："+e.message,true)}
+}
+async function deletePhoto(name){
+  const key=curKey();
+  try{
+    const pd=await dir.getDirectoryHandle(PHOTO_DIR);
+    const f=await (await pd.getFileHandle(name)).getFile();
+    const bd=await (await dir.getDirectoryHandle("backup",{create:true})).getDirectoryHandle(PHOTO_DIR,{create:true});
+    const bw=await (await bd.getFileHandle(name,{create:true})).createWritable();await bw.write(f);await bw.close();
+    await pd.removeEntry(name);
+    photos[key]=(photos[key]||[]).filter(n=>n!==name);if(!photos[key].length)delete photos[key];
+    capPending[name]="";await saveCaptions();delete captions[name];
+    if(mode==="note"&&notes[curNote]){touchNote();schedule()}
+    renderGallery();renderSideSoon();toast("写真を削除しました（予備は backup フォルダに残っています）");
+  }catch(e){toast("写真を削除できませんでした："+e.message)}
+}
+async function renderGallery(){
+  const tok=++galleryToken,g=$("gallery"),key=curKey(),names=(photos[key]||[]).slice();
+  galleryUrls.forEach(u=>URL.revokeObjectURL(u));galleryUrls=[];
+  const tiles=[];
+  if(names.length&&dir){
+    let pd=null;try{pd=await dir.getDirectoryHandle(PHOTO_DIR)}catch(e){}
+    for(const n of names){
+      let url="";try{url=URL.createObjectURL(await (await pd.getFileHandle(n)).getFile());galleryUrls.push(url)}catch(e){}
+      if(tok!==galleryToken){galleryUrls.forEach(u=>URL.revokeObjectURL(u));return}
+      tiles.push(`<figure class="ph" data-p="${esc(n)}"><img src="${url}" alt="${esc(captions[n]||"写真")}" loading="lazy"><button type="button" class="x" title="写真を削除">削除</button><input type="text" value="${esc(captions[n]||"")}" placeholder="説明を入れる" aria-label="写真の説明" maxlength="200"></figure>`);
+    }
+  }
+  if(tok!==galleryToken)return;
+  g.innerHTML=tiles.join("")+(loaded?`<button type="button" class="addph" id="addPhotoBtn">＋ 写真を追加<br><small>Ctrl+V で貼り付け・ドラッグでもOK</small></button>`:"");
+}
+$("gallery").addEventListener("click",e=>{
+  if(e.target.id==="addPhotoBtn"||e.target.closest("#addPhotoBtn"))return $("photoInput").click();
+  const fig=e.target.closest(".ph");if(!fig)return;
+  if(e.target.classList.contains("x")){
+    const x=e.target;if(!x.classList.contains("armed")){x.classList.add("armed");x.textContent="もう一度で削除";setTimeout(()=>{x.classList.remove("armed");x.textContent="削除"},3000);return}
+    return deletePhoto(fig.dataset.p);
+  }
+  if(e.target.tagName==="IMG"){$("lbImg").src=e.target.src;$("lbCap").textContent=captions[fig.dataset.p]||"";$("lightbox").hidden=false}
+});
+$("gallery").addEventListener("input",e=>{
+  const fig=e.target.closest(".ph");if(!fig||e.target.tagName!=="INPUT")return;
+  captions[fig.dataset.p]=e.target.value;capPending[fig.dataset.p]=e.target.value;
+  setState("編集中…");clearTimeout(capTimer);capTimer=setTimeout(saveCaptions,800);
+});
+$("gallery").addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"&&e.key==="Enter"&&!e.isComposing)e.target.blur()});
+$("photoInput").addEventListener("change",e=>{addPhotos(e.target.files);e.target.value=""});
+$("lightbox").onclick=()=>{$("lightbox").hidden=true};
+document.addEventListener("paste",e=>{
+  if($("app").hidden)return;
+  const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith("image/"));
+  if(!files.length)return;e.preventDefault();addPhotos(files);
+});
+$("pageScroll").addEventListener("dragover",e=>{if([...e.dataTransfer.types].includes("Files")){e.preventDefault();$("pageScroll").classList.add("drop")}});
+$("pageScroll").addEventListener("dragleave",e=>{if(e.target===$("pageScroll"))$("pageScroll").classList.remove("drop")});
+$("pageScroll").addEventListener("drop",e=>{$("pageScroll").classList.remove("drop");if(e.dataTransfer.files.length){e.preventDefault();addPhotos(e.dataTransfer.files)}});
+
 function grow(){const ta=$("body"),sc=$("pageScroll"),top=sc.scrollTop;ta.style.height="auto";ta.style.height=ta.scrollHeight+"px";sc.scrollTop=top}function keepCaret(){const ta=$("body"),sc=$("pageScroll"),cs=getComputedStyle(ta),m=document.createElement("div");for(const p of ["fontFamily","fontSize","fontWeight","lineHeight","letterSpacing","wordBreak","overflowWrap","tabSize"])m.style[p]=cs[p];m.style.cssText+=";position:absolute;visibility:hidden;white-space:pre-wrap;top:0;left:-9999px;width:"+ta.clientWidth+"px";m.textContent=ta.value.slice(0,ta.selectionEnd);const s=document.createElement("span");s.textContent="|";m.appendChild(s);document.body.appendChild(m);const y=s.offsetTop+s.offsetHeight;m.remove();const caret=ta.getBoundingClientRect().top+y,limit=sc.getBoundingClientRect().bottom-80;if(caret>limit)sc.scrollTop+=caret-limit}
 function updateCount(){$("chars").textContent=`${[...($("body").value).replace(/\s/g,"")].length.toLocaleString()}字`}
 function touchNote(){const n=notes[curNote];n.updated=stamp();if(!n.created)n.created=n.updated;pending.add("n:"+curNote);noteHead()}
@@ -526,7 +661,7 @@ function renderList(){
   for(const k of keys){
     const d=dateOf(k),mk=k.slice(0,7);
     if(mk!==lastM){h+=`<div class="month">${d.getFullYear()}年${d.getMonth()+1}月</div>`;lastM=mk}
-    h+=`<button type="button" class="item${k===cur?" sel":""}" data-k="${k}"><div class="d">${d.getMonth()+1}月${d.getDate()}日<small>${WD[d.getDay()]}曜日</small></div>${titles[k]&&titles[k].trim()?`<div class="t">${mark(titles[k],q)}</div>`:""}<div class="ex">${snippet(entries[k]||"",q)}</div></button>`;
+    h+=`<button type="button" class="item${k===cur?" sel":""}" data-k="${k}"><div class="d">${d.getMonth()+1}月${d.getDate()}日<small>${WD[d.getDay()]}曜日${photos[k]?" ・写真"+photos[k].length:""}</small></div>${titles[k]&&titles[k].trim()?`<div class="t">${mark(titles[k],q)}</div>`:""}<div class="ex">${snippet(entries[k]||"",q)}</div></button>`;
   }
   $("list").innerHTML=h;
 }
@@ -554,6 +689,7 @@ $("exportBtn").onclick=async()=>{
 /* ---------- キー操作 ---------- */
 document.addEventListener("keydown",e=>{
   if($("app").hidden)return;
+  if(e.key==="Escape"&&!$("lightbox").hidden){$("lightbox").hidden=true;return}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();manualSave()}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("q").focus();$("q").select()}
   if(mode==="diary"&&e.altKey&&e.key==="ArrowLeft"){e.preventDefault();openDay(addDays(cur,-1))}

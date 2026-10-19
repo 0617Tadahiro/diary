@@ -352,11 +352,11 @@ function openDay(k,findWord){
       const ratio=i/Math.max(1,ta.value.length);$("pageScroll").scrollTop=Math.max(0,ta.scrollHeight*ratio-160)}
   }if(document.activeElement===ta||document.activeElement===$("title"))document.activeElement.blur();
 }
-function grow(){const ta=$("body");ta.style.height="auto";ta.style.height=ta.scrollHeight+"px"}
+function grow(){const ta=$("body"),sc=$("pageScroll"),top=sc.scrollTop;ta.style.height="auto";ta.style.height=ta.scrollHeight+"px";sc.scrollTop=top}function keepCaret(){const ta=$("body"),sc=$("pageScroll"),cs=getComputedStyle(ta),m=document.createElement("div");for(const p of ["fontFamily","fontSize","fontWeight","lineHeight","letterSpacing","wordBreak","overflowWrap","tabSize"])m.style[p]=cs[p];m.style.cssText+=";position:absolute;visibility:hidden;white-space:pre-wrap;top:0;left:-9999px;width:"+ta.clientWidth+"px";m.textContent=ta.value.slice(0,ta.selectionEnd);const s=document.createElement("span");s.textContent="|";m.appendChild(s);document.body.appendChild(m);const y=s.offsetTop+s.offsetHeight;m.remove();const caret=ta.getBoundingClientRect().top+y,limit=sc.getBoundingClientRect().bottom-80;if(caret>limit)sc.scrollTop+=caret-limit}
 function updateCount(){$("chars").textContent=`${[...($("body").value).replace(/\s/g,"")].length.toLocaleString()}字`}
 $("body").addEventListener("input",()=>{
   entries[cur]=$("body").value;pending.add(cur);
-  grow();updateCount();schedule();renderSideSoon();
+  grow();keepCaret();updateCount();schedule();renderSideSoon();
 });
 $("title").addEventListener("input",()=>{
   titles[cur]=$("title").value;pending.add(cur);schedule();renderSideSoon();

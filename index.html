@@ -381,7 +381,7 @@ async function saveNotes(mine){
     }
     backedUp.add(NOTE_FILE);
   }
-  const w=await fh.createWritable();await w.write(serializeNotes());await w.close();
+  const txt=serializeNotes();const w=await fh.createWritable();await w.write(txt);await w.close();if(!old){const bd=await dir.getDirectoryHandle("backup",{create:true});const bw2=await (await bd.getFileHandle(NOTE_FILE,{create:true})).createWritable();await bw2.write(txt);await bw2.close()}
   known[NOTE_FILE]=(await fh.getFile()).lastModified;
   renderSide();
 }

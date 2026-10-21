@@ -127,6 +127,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .inph .x{position:absolute;top:8px;right:8px;border:0;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:2px 9px;opacity:0;transition:opacity .15s}
 .inph:hover .x,.inph .x:focus-visible,.inph .x.armed{opacity:1}
 .inph .x.armed{background:var(--danger)}
+.inph.picked img{outline:3px solid var(--accent);outline-offset:2px}
 .orph-head{grid-column:1/-1;font-size:12px;color:var(--sub);border-top:1px solid var(--line);padding-top:16px}
 .ph .acts{display:flex;gap:8px;justify-content:center;font-size:12px}
 .ph .acts button{background:none;border:1px solid var(--line);border-radius:999px;padding:2px 10px;color:var(--sub)}
@@ -556,7 +557,7 @@ async function deletePhoto(name){
     photos[key]=(photos[key]||[]).filter(n=>n!==name);if(!photos[key].length)delete photos[key];
     capPending[name]="";await saveCaptions();delete captions[name];
     const fig=[...$("body").querySelectorAll("figure.inph")].find(f=>f.dataset.p===name);
-    if(fig){const pv=fig.previousSibling,nx=fig.nextSibling;if(pv&&nx&&pv.nodeName!=="FIGURE"&&nx.nodeName!=="FIGURE")fig.replaceWith(document.createTextNode("\n"));else fig.remove()}
+    if(fig)removeFig(fig);
     onEdit();renderGallery();toast("写真を削除しました（予備は backup フォルダに残っています）");
   }catch(e){toast("写真を削除できませんでした："+e.message)}
 }
@@ -636,30 +637,87 @@ function makeFig(name,cap){
   photoURL(name).then(u=>{if(u)f.querySelector("img").src=u});
   return f;
 }
+/* 本文の決まり：写真は1行ぶんの独立したブロック。写真と写真のあいだ・前後には必ず文字の入る場所（テキスト）を置く。
+   テキストの末尾の改行1つは、ブラウザが次の行を見せるための「仮の改行」なので保存しない。 */
+const ZW="\u200b";
+// 文字のかたまり → 実際の行（末尾の改行1つはブラウザの仮の改行なので外す。見えない印 \\u200b も外す）
+function segLogical(raw){return (raw.endsWith("\n")?raw.slice(0,-1):raw).replace(/\u200b/g,"")}
+// 実際の行 → 画面用（空行で終わるときは見えない印を置いて、その行にカーソルが入れるようにする）
+function segDom(L){return L===""||L.endsWith("\n")?L+ZW:L}
 function setBody(text){
-  ed.textContent="";let buf=[];
-  const flushText=()=>{if(buf.length){ed.appendChild(document.createTextNode(buf.join("\n")));buf=[]}};
-  for(const line of (text||"").split("\n")){const m=IMG_LINE.exec(line.trim());if(m){flushText();ed.appendChild(makeFig(m[2],m[1]))}else buf.push(line)}
-  flushText();
-  if(ed.lastChild&&ed.lastChild.nodeName==="FIGURE")ed.appendChild(document.createTextNode("\u200b"));
-  updateEmpty();
+  ed.textContent="";let buf=null;
+  const flushText=()=>{if(buf===null)return;ed.appendChild(document.createTextNode(segDom(buf.join("\n"))));buf=null};
+  if(text)for(const line of text.split("\n")){const m=IMG_LINE.exec(line.trim());if(m){flushText();ed.appendChild(makeFig(m[2],m[1]))}else (buf=buf||[]).push(line)}
+  flushText();tidy();updateEmpty();
 }
 function getBody(){
-  let out="",afterImg=false,started=false;
-  const addText=t=>{if(!t)return;if(afterImg){out+="\n";afterImg=false}out+=t;started=true};
-  const walk=node=>{
-    for(const c of node.childNodes){
-      if(c.nodeType===3)addText(c.nodeValue);
-      else if(c.nodeName==="BR")addText("\n");
-      else if(c.nodeName==="FIGURE"&&c.dataset.p){
-        const cap=(c.querySelector("input")?.value||"").replace(/[\]\[\r\n]/g," ").trim();
-        if(started&&!afterImg)out+="\n";if(afterImg)out+="\n";
-        out+=`![${cap}](写真/${c.dataset.p})`;afterImg=true;started=true;
-      }
-      else if(c.nodeType===1){if(c.nodeName==="DIV"&&started)addText("\n");walk(c)}
+  const parts=[],kinds=[];let seg=null;
+  const flush=()=>{if(seg===null)return;parts.push(segLogical(seg));kinds.push("t");seg=null};
+  for(const c of ed.childNodes){
+    if(c.nodeType===3)seg=(seg||"")+c.nodeValue;
+    else if(c.nodeName==="BR")seg=(seg||"")+"\n";
+    else if(c.nodeName==="FIGURE"&&c.dataset.p){
+      flush();const cap=(c.querySelector("input")?.value||"").replace(/[\]\[\r\n]/g," ").trim();
+      parts.push(`![${cap}](写真/${c.dataset.p})`);kinds.push("f");
     }
-  };
-  walk(ed);return out.replace(/\u200b/g,"");
+    else if(c.nodeType===1)seg=(seg||"")+(c.innerText||c.textContent||"")+"\n";
+  }
+  flush();
+  // 写真の前後に置いた、文字の入っていない場所は保存しない
+  if(kinds[0]==="t"&&parts[0]===""&&kinds[1]==="f"){parts.shift();kinds.shift()}
+  const n=parts.length;if(n>1&&kinds[n-1]==="t"&&parts[n-1]===""&&kinds[n-2]==="f"){parts.pop();kinds.pop()}
+  if(parts.length===1&&kinds[0]==="t"&&parts[0]==="")return "";
+  return parts.join("\n");
+}
+// 形を整える：写真の前後に文字の場所を置き、不要な見えない文字を取り除く（カーソル位置は保つ）
+function tidy(){
+  // 1) カーソルの位置を「直前の写真」と「そこからの文字数」で覚えておく
+  let mark=null;const sel=getSelection();
+  if(sel.rangeCount&&sel.isCollapsed&&ed.contains(sel.anchorNode)&&!(sel.anchorNode.parentElement&&sel.anchorNode.parentElement.closest("figure"))){
+    let n=sel.anchorNode,o=sel.anchorOffset;
+    if(n===ed){const pv=ed.childNodes[o-1];if(pv&&pv.nodeType===3){n=pv;o=pv.nodeValue.length}else{const nx=ed.childNodes[o];if(nx&&nx.nodeType===3){n=nx;o=0}else n=null}}
+    if(n&&n.nodeType===3&&n.parentNode===ed){
+      let raw="",x=n.previousSibling;while(x&&x.nodeName!=="FIGURE"){raw=(x.nodeType===3?x.nodeValue:"")+raw;x=x.previousSibling}
+      mark={fig:x,raw:raw+n.nodeValue.slice(0,o)};
+    }
+  }
+  // 2) 形を整える
+  for(const c of [...ed.childNodes]){
+    if(c.nodeType===1&&c.nodeName!=="FIGURE")c.replaceWith(document.createTextNode(c.nodeName==="BR"?"\n":(c.innerText||c.textContent||"")+"\n"));
+    else if(c.nodeName==="FIGURE"&&!c.dataset.p)c.remove();
+  }
+  ed.normalize();
+  for(const f of ed.querySelectorAll(":scope>figure")){
+    if(!f.previousSibling||f.previousSibling.nodeType!==3)f.before(document.createTextNode(ZW));
+    if(!f.nextSibling||f.nextSibling.nodeType!==3)f.after(document.createTextNode(ZW));
+  }
+  const hasFig=!!ed.querySelector(":scope>figure");
+  for(const t of [...ed.childNodes]){
+    if(t.nodeType!==3)continue;const v=t.nodeValue;
+    const L=segLogical(v);const nv=(L===""&&!hasFig)?"":segDom(L);
+    if(nv===""&&!hasFig){t.remove();continue}
+    if(nv!==v)t.nodeValue=nv;
+  }
+  // 3) カーソルを戻す
+  if(mark&&(mark.fig===null||ed.contains(mark.fig))){
+    const t=mark.fig?mark.fig.nextSibling:ed.firstChild;
+    if(t&&t.nodeType===3){
+      const off=Math.min(mark.raw.replace(/\u200b/g,"").length,segLogical(t.nodeValue).length);
+      const s2=getSelection();if(!(s2.anchorNode===t&&s2.anchorOffset===off)){const r=document.createRange();r.setStart(t,off);r.collapse(true);s2.removeAllRanges();s2.addRange(r)}
+    }
+  }
+}
+function placeCaret(node,off){const r=document.createRange();r.setStart(node,off);r.collapse(true);const s=getSelection();s.removeAllRanges();s.addRange(r);lastRange=r.cloneRange()}
+// 写真を本文から外す（ファイルは残るので「本文に入っていない写真」から戻せる）
+function removeFig(fig){
+  const P=fig.previousSibling,N=fig.nextSibling;
+  const lp=P&&P.nodeType===3?segLogical(P.nodeValue):null,ln=N&&N.nodeType===3?segLogical(N.nodeValue):null;
+  const parts=[lp,ln].filter(x=>x!==null&&x!=="");const L=parts.join("\n");
+  const t=document.createTextNode(segDom(L));
+  fig.replaceWith(t);if(P&&P.nodeType===3)P.remove();if(N&&N.nodeType===3)N.remove();
+  const at=lp?lp.length:0;
+  if(ed.contains(document.activeElement)||document.activeElement===ed)placeCaret(t,Math.min(at,t.nodeValue.length));
+  tidy();
 }
 function plainText(t){return (t||"").replace(IMG_ANY,(m,c)=>"［写真"+(c?"："+c:"")+"］")}
 function updateEmpty(){ed.classList.toggle("empty",!ed.querySelector("figure")&&!(ed.textContent||"").trim())}
@@ -676,19 +734,22 @@ function scrollToWord(w){
   while((n=tw.nextNode())){const i=n.nodeValue.toLowerCase().indexOf(q);if(i>=0){const r=document.createRange();r.setStart(n,i);r.setEnd(n,i+w.length);const sc=$("pageScroll");sc.scrollTop+=r.getBoundingClientRect().top-sc.getBoundingClientRect().top-160;return}}
 }
 function insertFigAtCaret(fig){
-  let r=lastRange&&ed.contains(lastRange.startContainer)?lastRange:null;
+  let r=lastRange&&ed.contains(lastRange.startContainer)?lastRange.cloneRange():null;
   if(!r){r=document.createRange();r.selectNodeContents(ed);r.collapse(false)}
-  r.deleteContents();r.insertNode(fig);
-  // 写真が末尾なら、その後ろに書き続けられるよう見えない文字を置く
-  let nx=fig.nextSibling;
-  while(nx&&nx.nodeType===3&&nx.nodeValue===""&&nx.nextSibling){const t=nx.nextSibling;nx.remove();nx=t}
-  if(!nx||nx.nodeName==="FIGURE")fig.after(document.createTextNode("\u200b"));
-  else if(nx.nodeType===3&&nx.nodeValue==="")nx.nodeValue="\u200b";
-  const after=document.createRange();
-  if(fig.nextSibling&&fig.nextSibling.nodeType===3){after.setStart(fig.nextSibling,fig.nextSibling.nodeValue.startsWith("\u200b")?1:0)}else after.setStartAfter(fig);
-  after.collapse(true);lastRange=after;
-  // カーソルを写真の直後に移して、そのまま書き続けられるようにする
-  if(document.activeElement===ed||ed.contains(document.activeElement)){const sel=getSelection();sel.removeAllRanges();sel.addRange(after.cloneRange())}
+  if(!r.collapsed)r.deleteContents();
+  let c=r.startContainer,o=r.startOffset;
+  if(c.nodeType===3&&c.parentNode!==ed){o=0;c=c.parentNode}
+  if(c.nodeType===3){
+    const v=c.nodeValue;let left=v.slice(0,o),right=v.slice(o);
+    c.nodeValue=left;const rt=document.createTextNode(right);c.after(fig,rt);
+  }else{
+    const ref=c.childNodes[o]||null;c.insertBefore(fig,ref);
+  }
+  tidy();
+  const nx=fig.nextSibling;
+  if(nx&&nx.nodeType===3){const off=0;
+    const a=document.createRange();a.setStart(nx,off);a.collapse(true);lastRange=a;
+    if(document.activeElement===ed||ed.contains(document.activeElement)){const sel=getSelection();sel.removeAllRanges();sel.addRange(a.cloneRange())}}
   updateEmpty();
 }
 document.addEventListener("selectionchange",()=>{const s=getSelection();if(s.rangeCount&&ed.contains(s.anchorNode)&&!s.anchorNode.closest?.("figure")&&!(s.anchorNode.parentElement&&s.anchorNode.parentElement.closest("figure")))lastRange=s.getRangeAt(0).cloneRange()});
@@ -703,9 +764,62 @@ function onEdit(){
 function touchNote(){const n=notes[curNote];n.updated=stamp();if(!n.created)n.created=n.updated;pending.add("n:"+curNote);noteHead()}
 ed.addEventListener("input",e=>{
   if(e.target.tagName==="INPUT"){const f=e.target.closest("figure");if(f)f.querySelector("img").alt=e.target.value||"写真"}
+  else{unpickFig();if(!e.isComposing)tidy()}
   onEdit();if(e.target===ed)keepCaret();
 });
-ed.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"){e.stopPropagation();if(e.key==="Enter"&&!e.isComposing){e.preventDefault();e.target.blur()}}});
+ed.addEventListener("compositionend",()=>{setTimeout(()=>{tidy();onEdit()},0)});
+/* 写真の前後の行を消しても写真は消えない。写真のすぐ隣で消すと、まず写真が選ばれ、もう一度押すと本文から外れる */
+let picked=null;
+function unpickFig(){if(picked){picked.classList.remove("picked");picked=null}}
+function pickFig(f){unpickFig();picked=f;f.classList.add("picked")}
+function caretSeg(){
+  const s=getSelection();if(!s.rangeCount||!s.isCollapsed)return null;
+  let n=s.anchorNode,o=s.anchorOffset;if(!n||!ed.contains(n))return null;
+  if(n===ed){const pv=ed.childNodes[o-1],nx=ed.childNodes[o];return {t:null,o,prev:pv||null,next:nx||null}}
+  if(n.nodeType!==3||n.parentNode!==ed)return null;
+  return {t:n,o,prev:n.previousSibling,next:n.nextSibling};
+}
+function guardDelete(back){
+  const c=caretSeg();if(!c)return false;
+  if(!c.t){const f=back?c.prev:c.next;if(f&&f.nodeName==="FIGURE"){pickFig(f);return true}return false}
+  const v=c.t.nodeValue,o=c.o;
+  if(back){
+    if(!(c.prev&&c.prev.nodeName==="FIGURE"))return false;
+    if(v.slice(0,o).replace(/\u200b/g,"")!=="")return false;
+    const L=segLogical(v);
+    if(L.includes("\n")&&L.split("\n")[0]===""){ // 写真の直後の空行だけを消す
+      const k=v.indexOf("\n");c.t.nodeValue=v.slice(0,k)+v.slice(k+1);placeCaret(c.t,Math.min(k,c.t.nodeValue.length));tidy();onEdit();return true}
+    pickFig(c.prev);return true;
+  }else{
+    if(!(c.next&&c.next.nodeName==="FIGURE"))return false;
+    const after=v.slice(o).replace(/\u200b/g,"");if(after!==""&&after!=="\n")return false;
+    const before=v.slice(0,o).replace(/\u200b/g,"");const nl=v.lastIndexOf("\n",o-1);
+    const lineEmpty=v.slice(nl+1,o).replace(/\u200b/g,"")==="";
+    if(lineEmpty&&nl>=0&&before!==""){ // 写真の直前の空行だけを消す
+      c.t.nodeValue=v.slice(0,nl)+v.slice(nl+1);placeCaret(c.t,nl);tidy();onEdit();return true}
+    pickFig(c.next);return true;
+  }
+}
+ed.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT"){e.stopPropagation();if(e.key==="Enter"&&!e.isComposing){e.preventDefault();e.target.blur()}return}
+  if(e.isComposing||e.keyCode===229)return;
+  if(e.key==="Backspace"||e.key==="Delete"){
+    if(picked){e.preventDefault();const f=picked;unpickFig();removeFig(f);onEdit();renderGallery();toast("写真を本文から外しました（下の「本文に入っていない写真」から戻せます）");return}
+    if(guardDelete(e.key==="Backspace"))e.preventDefault();
+    return;
+  }
+  if(!["Shift","Control","Alt","Meta"].includes(e.key))unpickFig();
+});
+// 念のため：カーソルだけの状態で写真ごと消えそうな操作は止める
+ed.addEventListener("beforeinput",e=>{
+  if(e.target!==ed||!e.inputType.startsWith("delete"))return;
+  const s=getSelection();if(!s.rangeCount||!s.isCollapsed)return;
+  const tr=e.getTargetRanges&&e.getTargetRanges()[0];if(!tr)return;
+  const r=document.createRange();try{r.setStart(tr.startContainer,tr.startOffset);r.setEnd(tr.endContainer,tr.endOffset)}catch(err){return}
+  const f=[...ed.querySelectorAll(":scope>figure")].find(x=>r.intersectsNode(x));
+  if(f){e.preventDefault();pickFig(f)}
+});
+ed.addEventListener("mousedown",e=>{if(!e.target.closest||!e.target.closest("figure.picked"))unpickFig()});
 ed.addEventListener("click",e=>{
   const f=e.target.closest("figure.inph");if(!f)return;
   if(e.target.classList.contains("x")){

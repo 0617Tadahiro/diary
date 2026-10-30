@@ -128,6 +128,10 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .inph:hover .x,.inph .x:focus-visible,.inph .x.armed{opacity:1}
 .inph .x.armed{background:var(--danger)}
 .inph.picked img{outline:3px solid var(--accent);outline-offset:2px}
+.inph.loading img,.inph.missing img{display:none}
+.inph.loading::before,.inph.missing::before{display:block;padding:28px 12px;border-radius:8px;background:var(--side);color:var(--sub);font-size:13px;text-align:center}
+.inph.loading::before{content:"写真を読み込み中…"}
+.inph.missing::before{content:"写真を読み込めませんでした（ここを押すと読み直します）";cursor:pointer}
 .orph-head{grid-column:1/-1;font-size:12px;color:var(--sub);border-top:1px solid var(--line);padding-top:16px}
 .ph .acts{display:flex;gap:8px;justify-content:center;font-size:12px}
 .ph .acts button{background:none;border:1px solid var(--line);border-radius:999px;padding:2px 10px;color:var(--sub)}
@@ -526,7 +530,12 @@ async function addPhotos(files){
     for(const f of files){
       let blob;try{blob=await shrink(f)}catch(err){toast("この画像は読み込めない形式です（JPG・PNGなら貼れます）");continue}const n=Math.max(0,...list.map(photoNum))+1;
       const name=photoPrefix(key)+n+".jpg";
-      const w=await (await pd.getFileHandle(name,{create:true})).createWritable();await w.write(blob);await w.close();
+      // 書き込んだ後に読み直して、中身がちゃんと入ったか確かめる（だめならもう一度書く）
+      const sizeOf=async()=>{try{return (await (await pd.getFileHandle(name)).getFile()).size}catch(err){return -1}};
+      const writeIt=async()=>{const w=await (await pd.getFileHandle(name,{create:true})).createWritable();await w.write(blob);await w.close()};
+      await writeIt();
+      (async()=>{for(let i=0;i<3;i++){if(await sizeOf()===blob.size)return;await new Promise(r=>setTimeout(r,2000));if(await sizeOf()===blob.size)return;try{await writeIt()}catch(err){}}})();
+      urlCache[name]=URL.createObjectURL(blob); // 貼った写真はすぐ表示する
       list.push(name);
       insertFigAtCaret(makeFig(name,""));
     }
@@ -629,13 +638,25 @@ const IMG_ANY=/!\[([^\]\n]*)\]\(写真\/[^)\s]+\)/g;
 let lastRange=null,urlCache={};
 async function photoURL(name){
   if(urlCache[name])return urlCache[name];
-  try{const pd=await dir.getDirectoryHandle(PHOTO_DIR);const u=URL.createObjectURL(await (await pd.getFileHandle(name)).getFile());urlCache[name]=u;return u}catch(e){return ""}
+  // Google Drive では書いた直後や読み込み直後にすぐ読めないことがあるので、何度か待って読み直す
+  for(let i=0;i<6;i++){
+    try{const pd=await dir.getDirectoryHandle(PHOTO_DIR);const f=await (await pd.getFileHandle(name)).getFile();
+      if(f.size>0){const u=URL.createObjectURL(f);urlCache[name]=u;return u}}catch(e){}
+    await new Promise(r=>setTimeout(r,700*(i+1)));
+  }
+  return "";
+}
+function loadFigImg(f){
+  f.classList.remove("missing");f.classList.add("loading");
+  photoURL(f.dataset.p).then(u=>{f.classList.remove("loading");if(u)f.querySelector("img").src=u;else f.classList.add("missing")});
 }
 function makeFig(name,cap){
   const f=document.createElement("figure");f.className="inph";f.contentEditable="false";f.dataset.p=name;
   f.innerHTML='<img alt=""><button type="button" class="x" title="写真を削除">削除</button><input type="text" placeholder="説明を入れる" aria-label="写真の説明" maxlength="200">';
-  f.querySelector("input").value=cap||"";f.querySelector("img").alt=cap||"写真";
-  photoURL(name).then(u=>{if(u)f.querySelector("img").src=u});
+  f.querySelector("input").value=cap||"";
+  const img=f.querySelector("img");img.alt="";
+  img.onerror=()=>{if(img.dataset.retried){f.classList.add("missing");return}img.dataset.retried="1";delete urlCache[name];loadFigImg(f)};
+  loadFigImg(f);
   return f;
 }
 /* 本文の決まり：写真は1行ぶんの独立したブロック。写真と写真のあいだ・前後には必ず文字の入る場所（テキスト）を置く。
@@ -815,7 +836,7 @@ ed.addEventListener("beforeinput",e=>{
 },true);
 function touchNote(){const n=notes[curNote];n.updated=stamp();if(!n.created)n.created=n.updated;pending.add("n:"+curNote);noteHead()}
 ed.addEventListener("input",e=>{
-  if(e.target.tagName==="INPUT"){const f=e.target.closest("figure");if(f)f.querySelector("img").alt=e.target.value||"写真"}
+  if(e.target.tagName==="INPUT"){}
   else{unpickFig();if(!e.isComposing)tidy()}
   onEdit();if(e.target===ed)keepCaret();
 });
@@ -878,6 +899,7 @@ ed.addEventListener("click",e=>{
     const x=e.target;if(!x.classList.contains("armed")){x.classList.add("armed");x.textContent="もう一度で削除";setTimeout(()=>{x.classList.remove("armed");x.textContent="削除"},3000);return}
     return deletePhoto(f.dataset.p);
   }
+  if(f.classList.contains("missing")){delete urlCache[f.dataset.p];f.querySelector("img").removeAttribute("data-retried");loadFigImg(f);return}
   if(e.target.tagName==="IMG"&&e.target.src){$("lbImg").src=e.target.src;$("lbCap").textContent=f.querySelector("input").value||"";$("lightbox").hidden=false}
 });
 $("title").addEventListener("input",()=>{

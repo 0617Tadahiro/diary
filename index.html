@@ -226,6 +226,7 @@ let titles={};                // "2026-10-15" -> タイトル
 let known={};                 // ファイル名 -> 最後に読んだ/書いた lastModified
 let pending=new Set();        // 未保存の日付
 let backedUp=new Set();       // この起動中に予備を作ったファイル
+let touched=new Set();        // この起動中に書いた日・ノート（読み直しで古い内容に戻さない）
 let cur=todayKey();           // 表示中の日付
 let calMonth=cur.slice(0,7);  // カレンダー表示月
 let saveTimer=null, saving=null, loaded=false;
@@ -323,7 +324,7 @@ async function loadAll(){
     const r=parseYear(await f.text());Object.assign(nb,r.b);Object.assign(nt,r.t);
   }
   // 未保存の編集は手元を優先
-  for(const k of pending){if(k.startsWith("n:")){const id=k.slice(2);if(notes[id])nn[id]=notes[id]}else{nb[k]=entries[k]??"";nt[k]=titles[k]??""}}
+  for(const k of new Set([...pending,...touched])){if(k.startsWith("n:")){const id=k.slice(2);if(notes[id])nn[id]=notes[id]}else{nb[k]=entries[k]??"";nt[k]=titles[k]??""}}
   if(curNote&&notes[curNote]&&!nn[curNote])nn[curNote]=notes[curNote];
   const np={};let caps={};
   try{
@@ -346,7 +347,7 @@ async function start(){
 }
 // 他の端末で更新された分を取り込む
 async function refresh(){
-  if(!dir||!loaded||pending.size)return;
+  if(!dir||!loaded||pending.size||saving)return;
   try{
     let changed=false;
     for await(const [name,h] of dir.entries()){
@@ -355,7 +356,7 @@ async function refresh(){
     if(!changed)return;
     await loadAll();
     const vb=mode==="note"?(notes[curNote]?.body||""):(entries[cur]||""),vt=mode==="note"?(notes[curNote]?.title||""):(titles[cur]||"");
-    if(getBody()!==vb)setBody(vb);
+    if(getBody()!==vb){snap();setBody(vb)}
     if($("title").value!==vt)$("title").value=vt;
     renderSide();updateCount();renderGallery();
   }catch(e){}
@@ -369,7 +370,7 @@ async function flush(){
   clearTimeout(saveTimer);
   if(saving){await saving;}
   if(!pending.size||!loaded)return;
-  const keys=new Set(pending);pending.clear();
+  const keys=new Set(pending);pending.clear();keys.forEach(k=>touched.add(k));
   const years=[...new Set([...keys].filter(k=>!k.startsWith("n:")).map(k=>k.slice(0,4)))];
   const noteKeys=new Set([...keys].filter(k=>k.startsWith("n:")).map(k=>k.slice(2)));
   saving=(async()=>{
@@ -392,8 +393,8 @@ async function saveYear(y,mine){
   // 他の端末で変更されていたら、自分が触っていない日はそちらに合わせる
   if(old&&f.lastModified!==known[name]){
     const ext=parseYear(old);
-    for(const k of allKeys())if(k.startsWith(y+"-")&&!mine.has(k)&&!(k in ext.b)){delete entries[k];delete titles[k]}
-    for(const k in ext.b)if(!mine.has(k)){entries[k]=ext.b[k];titles[k]=ext.t[k]}
+    for(const k of allKeys())if(k.startsWith(y+"-")&&!mine.has(k)&&!touched.has(k)&&!(k in ext.b)){delete entries[k];delete titles[k]}
+    for(const k in ext.b)if(!mine.has(k)&&!touched.has(k)){entries[k]=ext.b[k];titles[k]=ext.t[k]}
   }
   // この起動で最初の保存のとき、元の状態を backup フォルダに1つだけ残す
   if(!backedUp.has(name)){
@@ -416,8 +417,8 @@ async function saveNotes(mine){
   // 他の端末で変更されていたら、自分が触っていないノートはそちらに合わせる
   if(old&&f.lastModified!==known[NOTE_FILE]){
     const ext=parseNotes(old);
-    for(const id of Object.keys(notes))if(!mine.has(id)&&id!==curNote&&!(id in ext))delete notes[id];
-    for(const id in ext)if(!mine.has(id))notes[id]=ext[id];
+    for(const id of Object.keys(notes))if(!mine.has(id)&&!touched.has("n:"+id)&&id!==curNote&&!(id in ext))delete notes[id];
+    for(const id in ext)if(!mine.has(id)&&!touched.has("n:"+id))notes[id]=ext[id];
   }
   if(!backedUp.has(NOTE_FILE)){
     if(old){
@@ -710,6 +711,7 @@ function tidy(){
 function placeCaret(node,off){const r=document.createRange();r.setStart(node,off);r.collapse(true);const s=getSelection();s.removeAllRanges();s.addRange(r);lastRange=r.cloneRange()}
 // 写真を本文から外す（ファイルは残るので「本文に入っていない写真」から戻せる）
 function removeFig(fig){
+  snap();
   const P=fig.previousSibling,N=fig.nextSibling;
   const lp=P&&P.nodeType===3?segLogical(P.nodeValue):null,ln=N&&N.nodeType===3?segLogical(N.nodeValue):null;
   const parts=[lp,ln].filter(x=>x!==null&&x!=="");const L=parts.join("\n");
@@ -736,7 +738,8 @@ function scrollToWord(w){
 function insertFigAtCaret(fig){
   let r=lastRange&&ed.contains(lastRange.startContainer)?lastRange.cloneRange():null;
   if(!r){r=document.createRange();r.selectNodeContents(ed);r.collapse(false)}
-  if(!r.collapsed)r.deleteContents();
+  if(!r.collapsed)r.collapse(false); // 選んでいた文字は消さず、その後ろに入れる
+  snap();
   let c=r.startContainer,o=r.startOffset;
   if(c.nodeType===3&&c.parentNode!==ed){o=0;c=c.parentNode}
   if(c.nodeType===3){
@@ -761,6 +764,55 @@ function onEdit(){
   updateEmpty();updateCount();schedule();renderSideSoon();
   const fc=ed.querySelectorAll("figure.inph").length;if(fc!==figCount){figCount=fc;renderGallery()}
 }
+/* ---------- 元に戻す（Ctrl+Z）／やり直す（Ctrl+Y） ---------- */
+const hist={};let lastInputAt=0;
+function hkey(){return mode==="note"?"n:"+curNote:cur}
+function snap(){
+  if(mode==="note"&&!notes[curNote])return;
+  const h=hist[hkey()]=hist[hkey()]||{u:[],r:[]};const v=getBody();
+  if(h.u.length&&h.u[h.u.length-1]===v)return;
+  h.u.push(v);if(h.u.length>300)h.u.shift();h.r=[];
+}
+function figLine(c){return `![${(c.querySelector("input")?.value||"").replace(/[\]\[\r\n]/g," ").trim()}](写真/${c.dataset.p})`}
+function placeLogical(off){
+  const kids=[...ed.childNodes];let count=0,first=true;
+  for(let i=0;i<kids.length;i++){const c=kids[i];
+    if(c.nodeType===3){const L=segLogical(c.nodeValue);
+      if(i===0&&L===""&&kids[1]&&kids[1].nodeName==="FIGURE")continue;
+      if(!first)count++;first=false;
+      if(off<=count+L.length)return placeCaret(c,Math.max(0,off-count));
+      count+=L.length;
+    }else if(c.nodeName==="FIGURE"){
+      if(!first)count++;first=false;const n=figLine(c).length;
+      if(off<count+n){const nx=c.nextSibling;if(nx&&nx.nodeType===3)return placeCaret(nx,0)}
+      count+=n;
+    }
+  }
+  const last=ed.lastChild;if(last&&last.nodeType===3)placeCaret(last,segLogical(last.nodeValue).length);
+}
+function applyHist(v,from){
+  let i=0;while(i<v.length&&i<from.length&&v[i]===from[i])i++;
+  setBody(v);ed.focus();placeLogical(i);onEdit();renderGallery();keepCaret();
+}
+function undo(){
+  const h=hist[hkey()];const curV=getBody();
+  if(h)while(h.u.length&&h.u[h.u.length-1]===curV)h.u.pop();
+  if(!h||!h.u.length)return toast("これ以上は戻せません");
+  const prev=h.u.pop();h.r.push(curV);applyHist(prev,curV);
+}
+function redo(){
+  const h=hist[hkey()];if(!h||!h.r.length)return toast("やり直せる操作はありません");
+  const curV=getBody(),next=h.r.pop();h.u.push(curV);applyHist(next,curV);
+}
+ed.addEventListener("beforeinput",e=>{
+  if(e.target!==ed)return;
+  if(e.inputType==="historyUndo"){e.preventDefault();return undo()}
+  if(e.inputType==="historyRedo"){e.preventDefault();return redo()}
+  const s=getSelection();const big=s.rangeCount&&!s.isCollapsed;
+  const now=Date.now();
+  if(big||/Paste|Drop|Cut|Line|Paragraph/.test(e.inputType)||now-lastInputAt>1000)snap();
+  lastInputAt=now;
+},true);
 function touchNote(){const n=notes[curNote];n.updated=stamp();if(!n.created)n.created=n.updated;pending.add("n:"+curNote);noteHead()}
 ed.addEventListener("input",e=>{
   if(e.target.tagName==="INPUT"){const f=e.target.closest("figure");if(f)f.querySelector("img").alt=e.target.value||"写真"}
@@ -788,7 +840,7 @@ function guardDelete(back){
     if(v.slice(0,o).replace(/\u200b/g,"")!=="")return false;
     const L=segLogical(v);
     if(L.includes("\n")&&L.split("\n")[0]===""){ // 写真の直後の空行だけを消す
-      const k=v.indexOf("\n");c.t.nodeValue=v.slice(0,k)+v.slice(k+1);placeCaret(c.t,Math.min(k,c.t.nodeValue.length));tidy();onEdit();return true}
+      snap();const k=v.indexOf("\n");c.t.nodeValue=v.slice(0,k)+v.slice(k+1);placeCaret(c.t,Math.min(k,c.t.nodeValue.length));tidy();onEdit();return true}
     pickFig(c.prev);return true;
   }else{
     if(!(c.next&&c.next.nodeName==="FIGURE"))return false;
@@ -796,7 +848,7 @@ function guardDelete(back){
     const before=v.slice(0,o).replace(/\u200b/g,"");const nl=v.lastIndexOf("\n",o-1);
     const lineEmpty=v.slice(nl+1,o).replace(/\u200b/g,"")==="";
     if(lineEmpty&&nl>=0&&before!==""){ // 写真の直前の空行だけを消す
-      c.t.nodeValue=v.slice(0,nl)+v.slice(nl+1);placeCaret(c.t,nl);tidy();onEdit();return true}
+      snap();c.t.nodeValue=v.slice(0,nl)+v.slice(nl+1);placeCaret(c.t,nl);tidy();onEdit();return true}
     pickFig(c.next);return true;
   }
 }
@@ -925,6 +977,12 @@ document.addEventListener("keydown",e=>{
   if(e.key==="Escape"&&!$("lightbox").hidden){$("lightbox").hidden=true;return}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();manualSave()}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("q").focus();$("q").select()}
+  // 本文の「元に戻す／やり直す」（タイトルや検索欄の中ではふだん通り）
+  if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.isComposing&&!(document.activeElement&&/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName))){
+    const k=e.key.toLowerCase();
+    if(k==="z"&&!e.shiftKey){e.preventDefault();undo();return}
+    if(k==="y"||(k==="z"&&e.shiftKey)){e.preventDefault();redo();return}
+  }
   if(mode==="diary"&&e.altKey&&e.key==="ArrowLeft"){e.preventDefault();openDay(addDays(cur,-1))}
   if(mode==="diary"&&e.altKey&&e.key==="ArrowRight"&&cur<todayKey()){e.preventDefault();openDay(addDays(cur,1))}
 });
